@@ -1,32 +1,60 @@
-name: release
+name: Release
+run-name: Release triggered by ${{ github.actor }}
 
 on:
-  push:
-    tags: ['v*']
+  workflow_dispatch: {}
 
 permissions:
   contents: write
   id-token: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
-  publish:
+  release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           registry-url: https://registry.npmjs.org
+
+      - name: Upgrade npm for Trusted Publishing support
+        run: npm install -g npm@latest
+
       - run: npm ci
       - run: npm test
-      - name: Check tag matches package version
+
+      - name: Read version
+        id: version
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Check tag does not already exist
         run: |
-          v="v$(node -p "require('./package.json').version")"
-          [ "$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != package version $v"; exit 1; }
-      - run: npm publish --provenance --access public
+          if git ls-remote --exit-code --tags origin "refs/tags/v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "Tag v${{ steps.version.outputs.version }} already exists. Bump the version in package.json before releasing." >&2
+            exit 1
+          fi
+
+      # Auth via npm Trusted Publishing (OIDC): configure this repo + workflow as the
+      # trusted publisher on npmjs.com for @baz-scm/jira-tui. No NPM_TOKEN needed.
+      - name: Publish to npm
+        run: npm publish --access public --provenance
+
+      - name: Tag release
+        run: |
+          git tag "v${{ steps.version.outputs.version }}"
+          git push origin "v${{ steps.version.outputs.version }}"
+
+      - name: Create GitHub Release
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ steps.version.outputs.version }}" \
+            --title "v${{ steps.version.outputs.version }}" \
+            --generate-notes

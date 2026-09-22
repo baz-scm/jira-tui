@@ -71,4 +71,4 @@ npm run build      # emit dist/
 
 ## Release
 
-Push a `v*` tag. CI runs tests, builds, and publishes to npm with provenance.
+Bump `version` in `package.json`, merge to `main`, then run the **Release** workflow from the Actions tab. It tests, publishes to npm via Trusted Publishing (OIDC, no token), tags `vX.Y.Z`, and creates a GitHub release.
