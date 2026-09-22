@@ -71,4 +71,4 @@ npm run build      # emit dist/
 
 ## Release
 
-Bump `version` in `package.json`, merge to `main`, then run the **Release** workflow from the Actions tab. It tests, publishes to npm via Trusted Publishing (OIDC, no token), tags `vX.Y.Z`, and creates a GitHub release.
+Bump `version` in `package.json` and merge to `main`. The **Release** workflow runs on every push to `main`; when the version isn't on npm yet it publishes via Trusted Publishing (OIDC, no token), tags `vX.Y.Z`, and creates a GitHub release. Merges without a bump are no-ops.
