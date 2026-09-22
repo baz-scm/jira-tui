@@ -26,12 +26,6 @@ Or run without installing:
 npx @baz-scm/jira-tui
 ```
 
-Straight from GitHub (no registry):
-
-```sh
-npm install -g github:baz-scm/jira-tui
-```
-
 ## One-time setup
 
 1. Create an API token: <https://id.atlassian.com/manage-profile/security/api-tokens>.
