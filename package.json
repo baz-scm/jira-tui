@@ -1,0 +1,31 @@
+{
+  "name": "@baz-scm/jira-tui",
+  "version": "0.1.0",
+  "description": "Minimal Jira sprint TUI for your terminal",
+  "license": "MIT",
+  "type": "module",
+  "bin": { "jt": "dist/cli.js" },
+  "files": ["dist", "README.md", "LICENSE"],
+  "engines": { "node": ">=20" },
+  "repository": { "type": "git", "url": "git+https://github.com/baz-scm/jira-tui.git" },
+  "homepage": "https://github.com/baz-scm/jira-tui",
+  "keywords": ["jira", "tui", "terminal", "sprint", "cli"],
+  "publishConfig": { "access": "public" },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx src/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "chalk": "^5.4.1",
+    "string-width": "^7.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

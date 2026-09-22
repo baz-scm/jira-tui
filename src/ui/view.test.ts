@@ -1,0 +1,108 @@
+import { describe, expect, it } from "vitest";
+import { emptyConfig } from "../config.js";
+import { JiraClient, type Issue } from "../jira/client.js";
+import { Model, sortIssues } from "./model.js";
+import { stripAnsi } from "./styles.js";
+import { renderDetailBody, view } from "./view.js";
+
+const issue = (o: Partial<Issue> & { key: string }): Issue => ({
+  summary: "",
+  type: "",
+  status: "",
+  statusCategory: "",
+  assignee: "",
+  reporter: "",
+  priority: "",
+  points: null,
+  labels: [],
+  parent: "",
+  created: null,
+  updated: null,
+  description: "",
+  ...o,
+});
+
+function testModel(): Model {
+  const client = new JiraClient({ siteUrl: "https://x.atlassian.net" });
+  const m = new Model(client, { ...emptyConfig(), board_id: 1, board_name: "Fixer" }, renderDetailBody);
+  m.sprint = { id: 7, name: "Sprint 42", state: "active" };
+  m.sprintLoaded = true;
+  m.issues = sortIssues([
+    issue({ key: "CR-3", type: "Bug", summary: "Done thing", status: "Done", statusCategory: "done", points: 2 }),
+    issue({ key: "CR-1", type: "Story", summary: "very long title ".repeat(20), status: "In Progress", statusCategory: "indeterminate", points: 5 }),
+    issue({ key: "CR-2", summary: "Todo", status: "To Do", statusCategory: "new" }),
+  ]);
+  m.resize(100, 12);
+  return m;
+}
+
+describe("list view", () => {
+  it("renders exactly `height` lines within width, sorted by status category", () => {
+    const m = testModel();
+    const out = view(m);
+    const lines = out.split("\n");
+    expect(lines).toHaveLength(12);
+    expect(m.issues.map((i) => i.key)).toEqual(["CR-2", "CR-1", "CR-3"]);
+    for (const want of ["Mine", "Sprint 42", "3 issues", "Bug", "Story", "CR-1", "In Progress", "5", "▸", "status", "sprints", "search"]) {
+      expect(out).toContain(want);
+    }
+    for (const l of lines) expect([...stripAnsi(l)].length).toBeLessThanOrEqual(100);
+  });
+
+  it("navigates and builds JQL", () => {
+    const m = testModel();
+    m.key("j");
+    expect(m.cursor).toBe(1);
+    m.key("G");
+    expect(m.cursor).toBe(2);
+    expect(m.jql()).toBe("sprint = 7 AND assignee = currentUser() ORDER BY Rank ASC");
+    m.scope = "team";
+    expect(m.jql()).toBe("sprint = 7 ORDER BY Rank ASC");
+    m.searching = true;
+    m.searchQuery = "cr-12";
+    expect(m.jql().startsWith(`key = "CR-12" OR text ~ "cr-12"`)).toBe(true);
+    m.searchQuery = `say "hi"`;
+    expect(m.jql()).toBe(`text ~ "say \\"hi\\"" ORDER BY updated DESC`);
+  });
+
+  it("shows help and detail", () => {
+    const m = testModel();
+    m.key("?");
+    expect(view(m)).toContain("keyboard shortcuts");
+    m.help = false;
+    m.resize(100, 30);
+    m.update({
+      type: "issue",
+      err: null,
+      issue: issue({ key: "CR-1", summary: "Title", status: "To Do", statusCategory: "new", description: "## Goal\n\nline" }),
+    });
+    expect(m.view).toBe("detail");
+    const out = view(m);
+    for (const want of ["CR-1", "Title", "## Goal", "browse/CR-1", "browser"]) expect(out).toContain(want);
+    expect(out.split("\n")).toHaveLength(30);
+  });
+
+  it("shows search input and applies the query", () => {
+    const m = testModel();
+    m.key("/");
+    for (const ch of "auth") m.key(ch);
+    const out = view(m);
+    expect(stripAnsi(out)).toContain("/ auth");
+    expect(out).toContain("cancel");
+    const cmds = m.key("enter");
+    expect(m.searching).toBe(true);
+    expect(m.searchQuery).toBe("auth");
+    expect(m.view).toBe("list");
+    expect(cmds).toHaveLength(1);
+  });
+
+  it("ignores stale issue results", () => {
+    const m = testModel();
+    m.key("r"); // seq 1
+    m.key("r"); // seq 2
+    m.update({ type: "issues", seq: 1, issues: [], err: null });
+    expect(m.issues).toHaveLength(3);
+    m.update({ type: "issues", seq: 2, issues: [], err: null });
+    expect(m.issues).toHaveLength(0);
+  });
+});
