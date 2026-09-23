@@ -1,9 +1,10 @@
 import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { JiraClient, parseDate, pointsStr } from "./client.js";
+import { JiraClient, parseDate, pointsStr, SPRINT_CUSTOM } from "./client.js";
 
 let server: Server;
 let client: JiraClient;
+let created: unknown;
 
 beforeAll(async () => {
   server = createServer((req, res) => {
@@ -33,6 +34,28 @@ beforeAll(async () => {
           return;
         }
         res.end(`{"transitions":[{"id":"31","name":"Done","to":{"name":"Done"}}]}`);
+        return;
+      }
+      if (req.url === "/rest/agile/1.0/board/5") {
+        res.end(`{"id":5,"location":{"projectKey":"CR"}}`);
+        return;
+      }
+      if (req.url?.startsWith("/rest/api/3/issue/createmeta/CR/issuetypes/10005")) {
+        res.end(`{"total":2,"fields":[
+          {"fieldId":"customfield_10020","name":"Sprint","required":false,"schema":{"type":"array","custom":"com.pyxis.greenhopper.jira:gh-sprint"}},
+          {"fieldId":"customfield_10389","name":"Squad","required":true,"hasDefaultValue":false,"schema":{"type":"option"},
+           "allowedValues":[{"id":"10636","value":"SDLC Agents"}]}
+        ]}`);
+        return;
+      }
+      if (req.url?.startsWith("/rest/api/3/issue/createmeta/CR/issuetypes")) {
+        res.end(`{"issueTypes":[{"id":"10005","name":"Task"},{"id":"10007","name":"Subtask","subtask":true}]}`);
+        return;
+      }
+      if (req.url === "/rest/api/3/issue" && req.method === "POST") {
+        created = JSON.parse(body);
+        res.statusCode = 201;
+        res.end(`{"id":"1","key":"CR-9"}`);
         return;
       }
       res.statusCode = 404;
@@ -72,6 +95,16 @@ describe("JiraClient", () => {
     const ts = await client.transitions("CR-1");
     expect(ts).toEqual([{ id: "31", name: "Done", to: "Done" }]);
     await expect(client.transition("CR-1", "31")).resolves.toBeUndefined();
+  });
+
+  it("reads create metadata and creates issues", async () => {
+    expect(await client.boardProject(5)).toBe("CR");
+    expect(await client.createIssueTypes("CR")).toEqual([{ id: "10005", name: "Task" }]);
+    const fields = await client.createFields("CR", "10005");
+    expect(fields[0]).toMatchObject({ id: "customfield_10020", custom: SPRINT_CUSTOM, array: true, required: false });
+    expect(fields[1]).toMatchObject({ id: "customfield_10389", required: true, options: [{ id: "10636", value: "SDLC Agents" }] });
+    expect(await client.createIssue({ summary: "x" })).toBe("CR-9");
+    expect(created).toEqual({ fields: { summary: "x" } });
   });
 
   it("parses Jira's +0000 offsets", () => {

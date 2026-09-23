@@ -10,6 +10,15 @@ export interface Config {
   board_id: number;
   board_name: string;
   story_points_fields: string[];
+  /** Values picked for required create fields (e.g. Squad), per project key then field id. */
+  create_defaults: Record<string, Record<string, SavedOption>>;
+}
+
+export interface SavedOption {
+  /** Field display name, for `jt defaults`. */
+  field: string;
+  id: string;
+  value: string;
 }
 
 export function configDir(): string {
@@ -22,7 +31,7 @@ export function configPath(): string {
 }
 
 export function emptyConfig(): Config {
-  return { site_url: "", email: "", api_token: "", board_id: 0, board_name: "", story_points_fields: [] };
+  return { site_url: "", email: "", api_token: "", board_id: 0, board_name: "", story_points_fields: [], create_defaults: {} };
 }
 
 export function loadConfig(): Config {

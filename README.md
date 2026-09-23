@@ -41,6 +41,7 @@ Config lives in `~/.config/jt/config.json` (mode 0600, contains the token).
 | `j`/`k` `↑`/`↓` | move | `j`/`k` | scroll |
 | `⏎` | open issue | `n`/`p` | next / prev issue |
 | `s` | change status | `s` | change status |
+| `n` | new issue (mine/team) | | |
 | `m` `t` `c` | mine / team / company (open sprints) | `o` | open in browser |
 | `b` | browse sprints on board | `esc` | back |
 | `B` | change board | | |
@@ -51,13 +52,19 @@ Config lives in `~/.config/jt/config.json` (mode 0600, contains the token).
 | `?` | full help | | |
 | `q` | quit | | |
 
+## Creating issues
+
+`n` in the Mine or Team list creates an issue in the sprint you're viewing, assigned to you. Pick the type, type a summary, `⏎`. Required pick-list fields (e.g. Squad) are asked the first time and saved per project; `jt defaults reset` to choose again.
+
 ## Commands
 
 ```
-jt          open the TUI
-jt auth     re-enter site / email / token
-jt board    pick a different board
-jt reset    drop config
+jt                  open the TUI
+jt auth             re-enter site / email / token
+jt board            pick a different board
+jt defaults         show saved new-issue values (e.g. Squad)
+jt defaults reset   forget them (optionally: reset <project>)
+jt reset            drop config
 ```
 
 ## Development
