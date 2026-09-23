@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { emptyConfig } from "../config.js";
-import { JiraClient, type Issue } from "../jira/client.js";
+import { JiraClient, SPRINT_CUSTOM, type CreateField, type Issue } from "../jira/client.js";
 import { Model, sortIssues } from "./model.js";
 import { stripAnsi } from "./styles.js";
 import { renderDetailBody, view } from "./view.js";
@@ -21,6 +21,8 @@ const issue = (o: Partial<Issue> & { key: string }): Issue => ({
   description: "",
   ...o,
 });
+
+vi.mock("../config.js", async (orig) => ({ ...(await orig<typeof import("../config.js")>()), saveConfig: vi.fn() }));
 
 function testModel(): Model {
   const client = new JiraClient({ siteUrl: "https://x.atlassian.net" });
@@ -104,5 +106,75 @@ describe("list view", () => {
     expect(m.issues).toHaveLength(3);
     m.update({ type: "issues", seq: 2, issues: [], err: null });
     expect(m.issues).toHaveLength(0);
+  });
+
+  it("creates an issue: type → required option (saved) → summary", async () => {
+    const m = testModel();
+    m.scope = "team";
+    expect(m.key("n")).toHaveLength(1);
+    m.update({
+      type: "createTypes",
+      project: "CR",
+      me: "acc-1",
+      sprintId: 7,
+      types: [{ id: "1", name: "Bug" }, { id: "2", name: "Task" }],
+      err: null,
+    });
+    expect(m.view).toBe("pick");
+    expect(m.pickItems[m.pickCursor]).toBe("Task");
+    expect(m.key("enter")).toHaveLength(1);
+
+    const squad: CreateField = {
+      id: "cf_squad",
+      name: "Squad",
+      required: true,
+      hasDefault: false,
+      array: false,
+      custom: "",
+      options: [{ id: "a", value: "Agents" }, { id: "b", value: "Tooling" }],
+    };
+    const sprintField: CreateField = { ...squad, id: "cf_sprint", name: "Sprint", required: false, custom: SPRINT_CUSTOM, options: [] };
+    m.update({ type: "createFields", fields: [sprintField, squad], err: null });
+    expect(m.pickTitle).toBe("Squad");
+    expect(stripAnsi(view(m))).toContain("Tooling");
+    m.key("j");
+    m.key("enter");
+    expect(m.cfg.create_defaults.CR?.cf_squad).toEqual({ field: "Squad", id: "b", value: "Tooling" });
+
+    expect(m.view).toBe("create");
+    for (const ch of "Fix q") m.key(ch);
+    expect(stripAnsi(view(m))).toContain("new task › Fix q");
+    const create = vi.spyOn(m.client, "createIssue").mockResolvedValue("CR-9");
+    const [cmd] = m.key("enter");
+    expect(await cmd!()).toEqual({ type: "created", key: "CR-9", err: null });
+    expect(create).toHaveBeenCalledWith({
+      project: { key: "CR" },
+      issuetype: { id: "2" },
+      summary: "Fix q",
+      assignee: { accountId: "acc-1" },
+      cf_squad: { id: "b" },
+      cf_sprint: 7,
+    });
+    expect(m.update({ type: "created", key: "CR-9", err: null })).toHaveLength(2);
+    expect(m.view).toBe("list");
+    expect(m.flash).toBe("CR-9 created");
+
+    // Second time: saved squad is reused, straight to summary.
+    m.key("n");
+    m.update({ type: "createTypes", project: "CR", me: "acc-1", sprintId: 7, types: [{ id: "2", name: "Task" }], err: null });
+    m.key("enter");
+    m.update({ type: "createFields", fields: [squad], err: null });
+    expect(m.view).toBe("create");
+    m.key("esc");
+    expect(m.view).toBe("list");
+    expect(m.create).toBeNull();
+  });
+
+  it("refuses to create outside a board sprint", () => {
+    const m = testModel();
+    m.scope = "company";
+    m.key("n");
+    expect(m.view).toBe("list");
+    expect(m.flash).toContain("press m or t");
   });
 });

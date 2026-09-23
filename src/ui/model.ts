@@ -1,10 +1,11 @@
 import type { Config } from "../config.js";
 import { saveConfig } from "../config.js";
 import { openBrowser } from "../browser.js";
-import type { Board, Issue, JiraClient, Sprint, Transition } from "../jira/client.js";
+import type { Board, CreateField, Issue, IssueType, JiraClient, Sprint, Transition } from "../jira/client.js";
+import { SPRINT_CUSTOM } from "../jira/client.js";
 
 export type Scope = "mine" | "team" | "company";
-export type View = "list" | "detail" | "sprints" | "search" | "transition" | "boards";
+export type View = "list" | "detail" | "sprints" | "search" | "transition" | "boards" | "pick" | "create";
 
 export const scopeLabel: Record<Scope, string> = { mine: "Mine", team: "Team", company: "Company" };
 
@@ -19,13 +20,37 @@ export type Msg =
   | { type: "transitions"; key: string; ts: Transition[]; err: Err }
   | { type: "transitioned"; key: string; to: string; err: Err }
   | { type: "listRefresh"; issue: Issue | null; err: Err }
+  | { type: "createTypes"; project: string; me: string; sprintId: number; types: IssueType[]; err: Err }
+  | { type: "createFields"; fields: CreateField[]; err: Err }
+  | { type: "created"; key: string; err: Err }
   | { type: "flashClear" }
   | { type: "tick" };
 
 /** A command runs async work and resolves to the message to feed back (or null). */
 export type Cmd = () => Promise<Msg | null>;
 
+const SEP_TXT = "  ·  ";
+
 const errStr = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** Fields the create flow fills itself; never prompted for. */
+const AUTO_FIELDS = new Set(["summary", "project", "issuetype", "reporter", "assignee", "description"]);
+
+/** In-progress "new issue" flow: pick type → pick missing required options → type summary. */
+export interface CreateDraft {
+  project: string;
+  me: string;
+  sprintId: number;
+  types: IssueType[];
+  type: IssueType | null;
+  /** Field id → payload value for required option fields. */
+  fields: Record<string, unknown>;
+  /** Required option fields with no saved default, asked in order. */
+  pending: CreateField[];
+  sprintField: string;
+}
+
+const optionValue = (f: CreateField, id: string): unknown => (f.array ? [{ id }] : { id });
 
 const KEY_RE = /^[A-Za-z][A-Za-z0-9_]+-\d+$/;
 const CAT_RANK: Record<string, number> = { new: 0, indeterminate: 1, done: 2 };
@@ -59,6 +84,11 @@ export class Model {
   transitions: Transition[] = [];
   trCursor = 0;
   trKey = "";
+
+  pickTitle = "";
+  pickItems: string[] = [];
+  pickCursor = 0;
+  create: CreateDraft | null = null;
 
   detail: Issue | null = null;
   vpLines: string[] = [];
@@ -160,6 +190,56 @@ export class Model {
         return { type: "transitioned", key, to: t.to, err: null };
       } catch (e) {
         return { type: "transitioned", key, to: t.to, err: errStr(e) };
+      }
+    };
+  }
+
+  private loadCreateTypes(sprintId: number): Cmd {
+    const board = this.cfg.board_id;
+    // Boards over a multi-project filter have no location; fall back to the list's project.
+    const fallback = this.issues[0]?.key.replace(/-\d+$/, "") ?? "";
+    return async () => {
+      try {
+        const [project, me] = await Promise.all([
+          this.client.boardProject(board).then((p) => p || fallback),
+          this.client.myself(),
+        ]);
+        if (!project) throw new Error("can't tell which project this board creates in");
+        const types = await this.client.createIssueTypes(project);
+        return { type: "createTypes", project, me: me.accountId, sprintId, types, err: null };
+      } catch (e) {
+        return { type: "createTypes", project: "", me: "", sprintId, types: [], err: errStr(e) };
+      }
+    };
+  }
+
+  private loadCreateFields(project: string, typeId: string): Cmd {
+    return async () => {
+      try {
+        return { type: "createFields", fields: await this.client.createFields(project, typeId), err: null };
+      } catch (e) {
+        return { type: "createFields", fields: [], err: errStr(e) };
+      }
+    };
+  }
+
+  private doCreate(d: CreateDraft, summary: string): Cmd {
+    const fields: Record<string, unknown> = {
+      project: { key: d.project },
+      issuetype: { id: d.type!.id },
+      summary,
+      assignee: { accountId: d.me },
+      ...d.fields,
+    };
+    if (d.sprintField) fields[d.sprintField] = d.sprintId;
+    return async () => {
+      try {
+        const key = await this.client.createIssue(fields);
+        // Sprint field not on the create screen: move it in via the agile API instead.
+        if (!d.sprintField) await this.client.addToSprint(d.sprintId, key);
+        return { type: "created", key, err: null };
+      } catch (e) {
+        return { type: "created", key: "", err: errStr(e) };
       }
     };
   }
@@ -288,7 +368,92 @@ export class Model {
       case "listRefresh":
         if (!msg.err && msg.issue) this.updateIssueInList(msg.issue);
         return [];
+      case "createTypes": {
+        this.loading = false;
+        if (msg.err || msg.types.length === 0) {
+          this.err = msg.err ?? `no creatable issue types in ${msg.project}`;
+          return [];
+        }
+        this.create = {
+          project: msg.project,
+          me: msg.me,
+          sprintId: msg.sprintId,
+          types: msg.types,
+          type: null,
+          fields: {},
+          pending: [],
+          sprintField: "",
+        };
+        this.openPick(`New issue${SEP_TXT}${msg.project}`, msg.types.map((t) => t.name));
+        this.pickCursor = Math.max(0, msg.types.findIndex((t) => t.name === "Task"));
+        return [];
+      }
+      case "createFields": {
+        this.loading = false;
+        const d = this.create;
+        if (!d) return [];
+        if (msg.err) {
+          this.cancelCreate();
+          this.err = msg.err;
+          return [];
+        }
+        const saved = this.cfg.create_defaults[d.project] ?? {};
+        d.fields = {};
+        d.pending = [];
+        d.sprintField = "";
+        for (const f of msg.fields) {
+          if (f.custom === SPRINT_CUSTOM) {
+            d.sprintField = f.id;
+            continue;
+          }
+          if (!f.required || f.hasDefault || AUTO_FIELDS.has(f.id)) continue;
+          if (f.options.length === 0) {
+            this.cancelCreate();
+            this.err = `required field "${f.name}" isn't supported here — create it in the browser`;
+            return [];
+          }
+          const s = saved[f.id];
+          if (s && f.options.some((o) => o.id === s.id)) d.fields[f.id] = optionValue(f, s.id);
+          else d.pending.push(f);
+        }
+        this.nextCreateStep();
+        return [];
+      }
+      case "created":
+        this.loading = false;
+        if (msg.err) {
+          // Stay in the summary input so it can be retried.
+          this.err = msg.err;
+          return [];
+        }
+        this.cancelCreate();
+        this.flash = `${msg.key} created`;
+        return [this.flashAfter(3000), this.loadIssues()];
     }
+  }
+
+  private openPick(title: string, items: string[]): void {
+    this.pickTitle = title;
+    this.pickItems = items;
+    this.pickCursor = 0;
+    this.view = "pick";
+  }
+
+  /** Ask for the next missing required option, else go to the summary input. */
+  private nextCreateStep(): void {
+    const f = this.create?.pending[0];
+    if (f) {
+      this.openPick(f.name, f.options.map((o) => o.value));
+      return;
+    }
+    this.input = "";
+    this.view = "create";
+  }
+
+  private cancelCreate(): void {
+    this.create = null;
+    this.input = "";
+    this.view = "list";
   }
 
   private setDetailContent(): void {
@@ -328,6 +493,10 @@ export class Model {
         return this.keyTransition(k);
       case "search":
         return this.keySearch(k);
+      case "pick":
+        return this.keyPick(k);
+      case "create":
+        return this.keyCreate(k);
     }
   }
 
@@ -382,6 +551,8 @@ export class Model {
         this.scope = k === "m" ? "mine" : k === "t" ? "team" : "company";
         this.cursor = this.offset = 0;
         return [this.loadIssues()];
+      case "n":
+        return this.startCreate();
       case "b":
         this.loading = true;
         return [this.loadSprints()];
@@ -582,6 +753,89 @@ export class Model {
       }
     }
     return [];
+  }
+
+  private startCreate(): Cmd[] {
+    if (this.searching || this.scope === "company") {
+      this.flash = "press m or t to create in the board's sprint";
+      return [this.flashAfter(2500)];
+    }
+    const sp = this.sprint;
+    if (!sp || sp.state === "closed") {
+      this.flash = "no open sprint to create in — press b to pick one";
+      return [this.flashAfter(2500)];
+    }
+    this.err = "";
+    this.loading = true;
+    return [this.loadCreateTypes(sp.id)];
+  }
+
+  private keyPick(k: string): Cmd[] {
+    const d = this.create;
+    switch (k) {
+      case "esc":
+      case "q":
+        this.cancelCreate();
+        break;
+      case "j":
+      case "down":
+        if (this.pickCursor < this.pickItems.length - 1) this.pickCursor++;
+        break;
+      case "k":
+      case "up":
+        if (this.pickCursor > 0) this.pickCursor--;
+        break;
+      case "enter": {
+        if (!d) break;
+        if (!d.type) {
+          const t = d.types[this.pickCursor];
+          if (!t) break;
+          d.type = t;
+          this.loading = true;
+          return [this.loadCreateFields(d.project, t.id)];
+        }
+        const f = d.pending[0];
+        const o = f?.options[this.pickCursor];
+        if (!f || !o) break;
+        d.fields[f.id] = optionValue(f, o.id);
+        d.pending.shift();
+        (this.cfg.create_defaults[d.project] ??= {})[f.id] = { field: f.name, id: o.id, value: o.value };
+        try {
+          saveConfig(this.cfg);
+        } catch (e) {
+          this.err = errStr(e);
+        }
+        this.nextCreateStep();
+        break;
+      }
+    }
+    return [];
+  }
+
+  private keyCreate(k: string): Cmd[] {
+    // A failed create shows its error in the input line; typing brings the input back.
+    if (k !== "enter") this.err = "";
+    switch (k) {
+      case "esc":
+        this.cancelCreate();
+        return [];
+      case "enter": {
+        const summary = this.input.trim();
+        if (!summary || !this.create || this.loading) return [];
+        this.err = "";
+        this.loading = true;
+        return [this.doCreate(this.create, summary)];
+      }
+      case "backspace":
+        this.input = this.input.slice(0, -1);
+        return [];
+      case "ctrl+u":
+        this.input = "";
+        return [];
+      default:
+        if (k.length === 1 && this.input.length < 255) this.input += k;
+        return [];
+    }
   }
 
   private keySearch(k: string): Cmd[] {

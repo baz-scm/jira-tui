@@ -9,10 +9,12 @@ import { renderDetailBody } from "./ui/view.js";
 
 const usage = `jt — Jira in your terminal
 
-  jt            open the TUI
-  jt auth       re-enter site / email / API token
-  jt board      pick a different board
-  jt reset      remove config
+  jt                  open the TUI
+  jt auth             re-enter site / email / API token
+  jt board            pick a different board
+  jt defaults         show saved new-issue values (e.g. Squad)
+  jt defaults reset   forget them (optionally: reset <project>)
+  jt reset            remove config
 
 Env overrides: JT_SITE, JT_EMAIL, JT_API_TOKEN
 Config: ${configDir()}
@@ -33,6 +35,9 @@ async function main(): Promise<void> {
     case "reset":
       removeConfig();
       console.log("config removed");
+      return;
+    case "defaults":
+      defaults(cfg, process.argv.slice(3));
       return;
     case "board":
       cfg.board_id = 0;
@@ -78,6 +83,28 @@ async function main(): Promise<void> {
   }
 
   await run(new Model(client, cfg, renderDetailBody));
+}
+
+function defaults(cfg: Config, args: string[]): void {
+  const [sub, project] = args;
+  if (sub === "reset") {
+    if (project) delete cfg.create_defaults[project.toUpperCase()];
+    else cfg.create_defaults = {};
+    saveConfig(cfg);
+    console.log(project ? `cleared defaults for ${project.toUpperCase()}` : "cleared all defaults");
+    return;
+  }
+  if (sub !== undefined) die(`unknown defaults command "${sub}" (try: jt defaults reset [project])`);
+  const projects = Object.entries(cfg.create_defaults);
+  if (projects.length === 0) {
+    console.log("no saved defaults — jt asks for required fields the first time you press n");
+    return;
+  }
+  for (const [p, fields] of projects) {
+    console.log(p);
+    for (const o of Object.values(fields)) console.log(`  ${o.field}: ${o.value}`);
+  }
+  console.log("\nchange with: jt defaults reset [project]");
 }
 
 async function ensureCreds(cfg: Config): Promise<void> {

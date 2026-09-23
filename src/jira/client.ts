@@ -39,6 +39,31 @@ export interface Transition {
   to: string;
 }
 
+export interface IssueType {
+  id: string;
+  name: string;
+}
+
+export interface FieldOption {
+  id: string;
+  value: string;
+}
+
+/** A field on the create screen for one project + issue type. */
+export interface CreateField {
+  id: string;
+  name: string;
+  required: boolean;
+  hasDefault: boolean;
+  /** schema.type is "array": value must be sent as a list. */
+  array: boolean;
+  /** schema.custom, e.g. "com.pyxis.greenhopper.jira:gh-sprint". */
+  custom: string;
+  options: FieldOption[];
+}
+
+export const SPRINT_CUSTOM = "com.pyxis.greenhopper.jira:gh-sprint";
+
 export interface Me {
   accountId: string;
   displayName: string;
@@ -219,6 +244,59 @@ export class JiraClient {
     await this.do<void>("POST", `/rest/api/3/issue/${key}/transitions`, undefined, { transition: { id } });
   }
 
+  /** Project key of the board's location, or "" for boards not tied to one project. */
+  async boardProject(boardId: number): Promise<string> {
+    const b = await this.do<{ location?: { projectKey?: string } }>("GET", `/rest/agile/1.0/board/${boardId}`);
+    return b.location?.projectKey ?? "";
+  }
+
+  /** Non-subtask issue types creatable in `project`. */
+  async createIssueTypes(project: string): Promise<IssueType[]> {
+    const resp = await this.do<{ issueTypes?: RawType[]; values?: RawType[] }>(
+      "GET",
+      `/rest/api/3/issue/createmeta/${project}/issuetypes`,
+      { maxResults: "200" },
+    );
+    return (resp.issueTypes ?? resp.values ?? []).filter((t) => !t.subtask).map((t) => ({ id: t.id, name: t.name }));
+  }
+
+  async createFields(project: string, typeId: string): Promise<CreateField[]> {
+    const out: CreateField[] = [];
+    let start = 0;
+    for (;;) {
+      const page = await this.do<{ fields?: RawField[]; values?: RawField[]; total?: number }>(
+        "GET",
+        `/rest/api/3/issue/createmeta/${project}/issuetypes/${typeId}`,
+        { startAt: String(start), maxResults: "200" },
+      );
+      const fields = page.fields ?? page.values ?? [];
+      for (const f of fields) {
+        out.push({
+          id: f.fieldId,
+          name: f.name,
+          required: f.required === true,
+          hasDefault: f.hasDefaultValue === true,
+          array: f.schema?.type === "array",
+          custom: f.schema?.custom ?? "",
+          options: (f.allowedValues ?? []).map((v) => ({ id: String(v.id), value: v.value ?? v.name ?? String(v.id) })),
+        });
+      }
+      start += fields.length;
+      if (fields.length === 0 || start >= (page.total ?? 0)) break;
+    }
+    return out;
+  }
+
+  /** Creates an issue and returns its key. */
+  async createIssue(fields: Record<string, unknown>): Promise<string> {
+    const r = await this.do<{ key: string }>("POST", "/rest/api/3/issue", undefined, { fields });
+    return r.key;
+  }
+
+  async addToSprint(sprintId: number, key: string): Promise<void> {
+    await this.do<void>("POST", `/rest/agile/1.0/sprint/${sprintId}/issue`, undefined, { issues: [key] });
+  }
+
   /** Custom field ids named like story points. */
   async discoverStoryPointFields(): Promise<string[]> {
     const fields = await this.do<{ id: string; name: string }[]>("GET", "/rest/api/3/field");
@@ -263,6 +341,21 @@ export class JiraClient {
 interface RawIssue {
   key: string;
   fields?: Record<string, unknown>;
+}
+
+interface RawType {
+  id: string;
+  name: string;
+  subtask?: boolean;
+}
+
+interface RawField {
+  fieldId: string;
+  name: string;
+  required?: boolean;
+  hasDefaultValue?: boolean;
+  schema?: { type?: string; custom?: string };
+  allowedValues?: { id: string | number; value?: string; name?: string }[];
 }
 
 function nameOf(v: unknown): string {

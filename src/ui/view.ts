@@ -39,6 +39,8 @@ export function view(m: Model): string {
       return renderBoards(m);
     case "transition":
       return renderTransition(m);
+    case "pick":
+      return renderPick(m);
     default:
       return renderList(m);
   }
@@ -55,8 +57,21 @@ function header(m: Model, t: string): string {
 function statusLine(m: Model): string {
   if (m.view === "search") return " " + dim("/ ") + m.input + "█";
   if (m.err) return " " + errStyle(truncate(m.err, m.width - 2));
+  if (m.view === "create") {
+    const pre = `new ${m.create?.type?.name.toLowerCase() ?? "issue"} › `;
+    return " " + dim(pre) + tailFit(m.input, m.width - 3 - width(pre)) + "█";
+  }
   if (m.flash) return " " + flashStyle(m.flash);
   return "";
+}
+
+/** Keep the end of `s` (where the cursor is) within `w` columns. */
+function tailFit(s: string, w: number): string {
+  if (width(s) <= w) return s;
+  const chars = [...s];
+  let out = "";
+  for (let i = chars.length - 1; i >= 0 && width("…" + chars[i] + out) <= w; i--) out = chars[i] + out;
+  return "…" + out;
 }
 
 function hints(...pairs: string[]): string {
@@ -100,9 +115,10 @@ function renderList(m: Model): string {
     body = " " + dim(msg);
   } else body = renderRows(m);
 
-  let footer = hints("↑↓", "move", "⏎", "open", "s", "status", "m/t/c", "mine/team/company", "b", "sprints", "/", "search", "?", "help", "q", "quit");
+  let footer = hints("↑↓", "move", "⏎", "open", "s", "status", "n", "new", "m/t/c", "mine/team/company", "b", "sprints", "/", "search", "?", "help", "q", "quit");
   if (m.searching) footer = hints("↑↓", "move", "⏎", "open", "s", "status", "esc", "back", "/", "search", "?", "help", "q", "quit");
   if (m.view === "search") footer = hints("⏎", "search", "esc", "cancel");
+  if (m.view === "create") footer = hints("⏎", "create (assigned to you, in this sprint)", "esc", "cancel");
   return frame(m, head, body, footer);
 }
 
@@ -230,6 +246,21 @@ function renderTransition(m: Model): string {
   return frame(m, head, out.join("\n"), hints("↑↓", "move", "⏎", "apply", "esc", "cancel"));
 }
 
+function renderPick(m: Model): string {
+  let t = title(m.pickTitle);
+  // Past the type step, picks are required fields that get remembered.
+  if (m.create?.type) t += SEP + dim("saved for next time · `jt defaults` to reset");
+  const head = header(m, t);
+  const rows = m.listRows();
+  const start = windowStart(m.pickCursor, rows);
+  const out: string[] = [];
+  for (let i = start; i < m.pickItems.length && i < start + rows; i++) {
+    const line = m.pickItems[i]!;
+    out.push(i === m.pickCursor ? select("▸ ") + cursorBg(line) : "  " + line);
+  }
+  return frame(m, head, out.join("\n"), hints("↑↓", "move", "⏎", "select", "esc", "cancel"));
+}
+
 // ---- help ----
 
 function renderHelp(): string {
@@ -243,6 +274,7 @@ function renderHelp(): string {
     ["j / k", "move down / up  (↑↓, g/G top/bottom, ^d/^u half page)"],
     ["enter", "open issue details"],
     ["s", "change status of selected issue"],
+    ["n", "new issue in this sprint, assigned to you"],
     ["m", "my issues in current sprint (default)"],
     ["t", "all team issues in current sprint (board)"],
     ["c", "all company issues in any open sprint"],
